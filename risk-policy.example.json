@@ -1,0 +1,37 @@
+{
+  "version": "shadow-local-v1",
+  "allowedAccounts": ["main"],
+  "allowUnregisteredStrategies": false,
+  "defaultLimits": {
+    "minOrderNotionalUsd": "5",
+    "maxOrderNotionalUsd": "25",
+    "maxOrderRiskUsd": "1",
+    "maxSlippageBps": 50,
+    "maxStopDistanceBps": 1500
+  },
+  "portfolioLimits": {
+    "maxTotalExposureUsd": "100",
+    "maxSymbolExposureUsd": "25",
+    "maxStrategyExposureUsd": "25",
+    "maxOpenPositions": 1,
+    "maxDailyLossUsd": "2",
+    "maxConsecutiveLosses": 2,
+    "maxEffectiveLeverage": "1",
+    "minLiquidationDistanceBps": 2000
+  },
+  "marketLimits": {
+    "maxMarketAgeMs": 2000,
+    "maxSpreadBps": 50,
+    "maxReferenceDeviationBps": 100,
+    "minTopOfBookDepthUsd": "1000"
+  },
+  "strategyLimits": {
+    "rules": {
+      "minOrderNotionalUsd": "5",
+      "maxOrderNotionalUsd": "20",
+      "maxOrderRiskUsd": "0.5",
+      "maxSlippageBps": 30,
+      "maxStopDistanceBps": 1000
+    }
+  }
+}

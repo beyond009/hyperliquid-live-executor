@@ -1,0 +1,241 @@
+openapi: 3.1.0
+info:
+  title: Hyperliquid Executor Control API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:31800
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: Process is alive
+  /ready:
+    get:
+      responses:
+        "200":
+          description: Store is available and executor can accept shadow intents
+        "503":
+          description: Mainnet data is stale, startup reconciliation is pending, or account is close-only
+  /v1/trade-intents:
+    post:
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TradeIntent" }
+      responses:
+        "201":
+          description: Intent created, including its persisted admission risk decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredIntent" }
+        "200":
+          description: Existing intent returned for idempotency key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredIntent" }
+        "400": { description: Invalid intent }
+        "409": { description: Idempotency key or intent ID conflicts with another request }
+        "503": { description: New entries are blocked by startup reconciliation or close-only mode }
+  /v1/trade-intents/{intentId}:
+    get:
+      parameters:
+        - in: path
+          name: intentId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Intent state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredIntent" }
+        "404": { description: Intent not found }
+  /v1/trade-intents/{intentId}/confirm:
+    post:
+      parameters:
+        - in: path
+          name: intentId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [digest, confirmedBy]
+              properties:
+                digest: { type: string, pattern: "^[0-9a-fA-F]{64}$" }
+                confirmedBy: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        "200":
+          description: Intent confirmed or atomically rejected by the kill switch
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredIntent" }
+        "409": { description: Digest mismatch or intent is not awaiting confirmation }
+        "410": { description: Confirmation expired and intent was persistently rejected }
+        "503": { description: Confirmation is blocked by startup reconciliation or close-only mode }
+  /v1/events:
+    get:
+      parameters:
+        - in: query
+          name: after
+          schema: { type: integer, format: int64, default: 0 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 500 }
+      responses:
+        "200": { description: Ordered replayable execution events }
+  /v1/mainnet/status:
+    get:
+      responses:
+        "200":
+          description: Mainnet synchronization, execution mode, and reconciliation reason
+  /v1/mainnet/account-snapshot:
+    get:
+      responses:
+        "200":
+          description: Latest persisted read-only mainnet account snapshot
+        "404":
+          description: Mainnet account is not configured or has not synchronized
+  /v1/console/stream:
+    get:
+      description: WebSocket stream of readiness, account snapshots, and incremental audit events
+      responses:
+        "101": { description: WebSocket protocol upgraded }
+        "400": { description: WebSocket upgrade headers are missing or invalid }
+  /v1/control/kill-switch:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                reason: { type: [string, "null"] }
+      responses:
+        "200": { description: Kill switch updated }
+  /v1/control/reconciliation/acknowledge:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [accountAddress, expectedReasonCode, acknowledgedBy]
+              properties:
+                accountAddress: { type: string, pattern: "^0x[0-9a-f]{40}$" }
+                expectedReasonCode: { type: string, minLength: 1, maxLength: 128 }
+                acknowledgedBy: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        "200":
+          description: Close-only state acknowledged after three consecutive clean snapshots
+        "400": { description: Account does not match the configured mainnet account }
+        "409": { description: State, reason, or clean-snapshot requirement does not match }
+components:
+  schemas:
+    StoredIntent:
+      type: object
+      required: [intent, idempotencyKey, status, createdAt, updatedAt]
+      properties:
+        intent: { $ref: "#/components/schemas/TradeIntent" }
+        idempotencyKey: { type: string }
+        status:
+          type: string
+          enum: [received, awaiting_confirmation, risk_rejected, shadow_accepted, approved, submitting, executing, completed, cancel_pending, canceled, failed]
+        statusReason: { type: [string, "null"] }
+        riskDecision:
+          oneOf:
+            - { $ref: "#/components/schemas/RiskDecision" }
+            - { type: "null" }
+        manualConfirmation:
+          oneOf:
+            - { $ref: "#/components/schemas/ManualConfirmation" }
+            - { type: "null" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ManualConfirmation:
+      type: object
+      required: [digest, expiresAt, confirmedAt, confirmedBy]
+      properties:
+        digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+        expiresAt: { type: string, format: date-time }
+        confirmedAt: { type: [string, "null"], format: date-time }
+        confirmedBy: { type: [string, "null"] }
+    RiskDecision:
+      type: object
+      required: [status, policyVersion, reasonCodes, approvedNotionalUsd, estimatedStopRiskUsd, stopDistanceBps]
+      properties:
+        status: { type: string, enum: [approved, rejected] }
+        policyVersion: { type: string }
+        reasonCodes:
+          type: array
+          items:
+            type: string
+            enum: [account_not_allowed, strategy_not_registered, slippage_limit_exceeded, stop_distance_exceeded, below_minimum_notional, account_snapshot_mismatch, invalid_account_equity, daily_loss_limit_exceeded, consecutive_loss_limit_exceeded, maximum_positions_exceeded, total_exposure_exceeded, symbol_exposure_exceeded, strategy_exposure_exceeded, effective_leverage_exceeded, liquidation_distance_too_small, market_data_stale, invalid_market_quote, spread_too_wide, reference_price_deviation_exceeded, insufficient_market_depth]
+        approvedNotionalUsd: { type: [string, "null"] }
+        estimatedStopRiskUsd: { type: [string, "null"] }
+        stopDistanceBps: { type: [string, "null"] }
+    TradeIntent:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, intentId, strategyId, strategyVersion, strategyInstanceId, signalId, accountId, symbol, side, referencePrice, maxNotionalUsd, maxRiskUsd, entry, exit, createdAt, expiresAt]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        intentId: { type: string, format: uuid }
+        strategyId: { $ref: "#/components/schemas/Identifier64" }
+        strategyVersion: { type: string, minLength: 1, maxLength: 64 }
+        strategyInstanceId: { $ref: "#/components/schemas/Identifier128" }
+        signalId: { $ref: "#/components/schemas/Identifier128" }
+        accountId: { $ref: "#/components/schemas/Identifier64" }
+        symbol: { type: string, maxLength: 32 }
+        side: { type: string, enum: [long, short] }
+        referencePrice: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+        maxNotionalUsd: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+        maxRiskUsd: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+        entry:
+          type: object
+          required: [type, maxSlippageBps]
+          properties:
+            type: { type: string, enum: [market_ioc] }
+            maxSlippageBps: { type: integer, minimum: 1, maximum: 500 }
+        exit:
+          type: object
+          required: [stopLossPrice, takeProfit]
+          properties:
+            stopLossPrice: { type: string }
+            takeProfit:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required: [price, positionPct]
+                properties:
+                  price: { type: string }
+                  positionPct: { type: integer, minimum: 1, maximum: 100 }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    Identifier64:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: "^[A-Za-z0-9_.:-]+$"
+    Identifier128:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^[A-Za-z0-9_.:-]+$"
